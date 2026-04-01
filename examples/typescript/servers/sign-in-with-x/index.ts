@@ -32,7 +32,7 @@ if (!facilitatorUrl) {
   process.exit(1);
 }
 
-const PORT = 4021;
+const PORT = 4022;
 const EVM_NETWORK = "eip155:84532" as const;
 const SVM_NETWORK = "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1" as const;
 
