@@ -1,18 +1,33 @@
-import { config } from "dotenv";
-import { x402Client, wrapFetchWithPayment, x402HTTPClient } from "@x402/fetch";
 import { ExactEvmScheme } from "@x402/evm/exact/client";
-import { ExactSvmScheme } from "@x402/svm/exact/client";
+import { wrapFetchWithPayment, x402Client, x402HTTPClient } from "@x402/fetch";
+import { config } from "dotenv";
 import { privateKeyToAccount } from "viem/accounts";
-import { createKeyPairSignerFromBytes } from "@solana/kit";
-import { base58 } from "@scure/base";
 
 config();
 
-const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
-const svmPrivateKey = process.env.SVM_PRIVATE_KEY as string;
+console.log("Starting x402 fetch client example...");
+
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 const endpointPath = process.env.ENDPOINT_PATH || "/weather";
 const url = `${baseURL}${endpointPath}`;
+
+function normalizeEvmPrivateKey(value: string | undefined): `0x${string}` {
+  if (!value) {
+    throw new Error("EVM_PRIVATE_KEY is required");
+  }
+
+  const trimmed = value.trim();
+  const withPrefix = trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+  const hexBody = withPrefix.slice(2);
+
+  if (!/^[0-9a-fA-F]{64}$/.test(hexBody)) {
+    throw new Error(
+      "Invalid EVM_PRIVATE_KEY. Expected 32-byte hex (64 chars), with or without 0x prefix.",
+    );
+  }
+
+  return withPrefix as `0x${string}`;
+}
 
 /**
  * Example demonstrating how to use @x402/fetch to make requests to x402-protected endpoints.
@@ -24,12 +39,11 @@ const url = `${baseURL}${endpointPath}`;
  * - SVM_PRIVATE_KEY: The private key of the SVM signer
  */
 async function main(): Promise<void> {
+  const evmPrivateKey = normalizeEvmPrivateKey(process.env.EVM_PRIVATE_KEY);
   const evmSigner = privateKeyToAccount(evmPrivateKey);
-  const svmSigner = await createKeyPairSignerFromBytes(base58.decode(svmPrivateKey));
 
   const client = new x402Client();
   client.register("eip155:*", new ExactEvmScheme(evmSigner));
-  client.register("solana:*", new ExactSvmScheme(svmSigner));
 
   const fetchWithPayment = wrapFetchWithPayment(fetch, client);
 
