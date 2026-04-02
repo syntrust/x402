@@ -8,7 +8,23 @@ import { base58 } from "@scure/base";
 import { createSIWxClientHook, type SolanaSigner } from "@x402/extensions/sign-in-with-x";
 config();
 
-const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}` | undefined;
+function normalizeEvmPrivateKey(value: string | undefined): `0x${string}` | undefined {
+  if (!value) return undefined;
+
+  const trimmed = value.trim();
+  const withPrefix = trimmed.startsWith("0x") ? trimmed : `0x${trimmed}`;
+  const hexBody = withPrefix.slice(2);
+
+  if (!/^[0-9a-fA-F]{64}$/.test(hexBody)) {
+    throw new Error(
+      "Invalid EVM_PRIVATE_KEY. Expected 32-byte hex (64 chars), with or without 0x prefix.",
+    );
+  }
+
+  return withPrefix as `0x${string}`;
+}
+
+const evmPrivateKey = normalizeEvmPrivateKey(process.env.EVM_PRIVATE_KEY);
 const svmPrivateKey = process.env.SVM_PRIVATE_KEY as string | undefined;
 const baseURL = process.env.RESOURCE_SERVER_URL || "http://localhost:4021";
 
@@ -19,9 +35,27 @@ if (!evmPrivateKey && !svmPrivateKey) {
 }
 
 const evmSigner = evmPrivateKey ? privateKeyToAccount(evmPrivateKey) : undefined;
-const svmSigner = svmPrivateKey
-  ? await createKeyPairSignerFromBytes(base58.decode(svmPrivateKey))
-  : undefined;
+let svmSigner: Awaited<ReturnType<typeof createKeyPairSignerFromBytes>> | undefined;
+if (svmPrivateKey) {
+  try {
+    const bytes = base58.decode(svmPrivateKey.trim());
+    if (bytes.byteLength !== 64) {
+      throw new Error(`SVM_PRIVATE_KEY must decode to 64 bytes (got ${bytes.byteLength})`);
+    }
+    svmSigner = await createKeyPairSignerFromBytes(bytes);
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Invalid SVM_PRIVATE_KEY (expected base58-encoded 64-byte keypair)";
+
+    if (evmSigner) {
+      // console.warn(`[warn] Ignoring invalid SVM_PRIVATE_KEY: ${message}`);
+    } else {
+      throw new Error(`[config] ${message}`);
+    }
+  }
+}
 
 // Configure client with available signers
 const client = new x402Client();
@@ -136,7 +170,7 @@ async function main(): Promise<void> {
   console.log(`Server: ${baseURL}`);
 
   // Auth-only: SIWX signature without payment
-  await demonstrateAuthOnly();
+  // await demonstrateAuthOnly();
 
   await demonstrateResource("/weather");
 
