@@ -77,7 +77,90 @@ if (svmSigner) {
   httpClient.onPaymentRequired(createSIWxClientHook(svmSigner as SolanaSigner));
 }
 
-const fetchWithPayment = wrapFetchWithPayment(fetch, httpClient);
+const rawFetch = fetch;
+let tracedRequestCounter = 0;
+
+function headersToRecord(headers?: HeadersInit): Record<string, string> {
+  if (!headers) return {};
+  if (headers instanceof Headers) {
+    return Object.fromEntries(headers.entries());
+  }
+  if (Array.isArray(headers)) {
+    return Object.fromEntries(headers);
+  }
+  return { ...headers };
+}
+
+function resolveRequestTraceInfo(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): { method: string; url: string; headers: Record<string, string> } {
+  const isRequest = typeof Request !== "undefined" && input instanceof Request;
+  const url = typeof input === "string" ? input : isRequest ? input.url : input.toString();
+  const method = init?.method ?? (isRequest ? input.method : "GET");
+
+  const baseHeaders = isRequest ? headersToRecord(input.headers) : {};
+  const overrideHeaders = headersToRecord(init?.headers);
+  const headers = { ...baseHeaders, ...overrideHeaders };
+
+  return { method, url, headers };
+}
+
+function maskHeaderValue(value: string | undefined, visible = 12): string | undefined {
+  if (!value) return value;
+  if (value.length <= visible * 2) return value;
+  return `${value.slice(0, visible)}...${value.slice(-visible)}`;
+}
+
+function formatKeyHeaders(record: Record<string, string>, names: string[]): string {
+  return names
+    .map(name => {
+      const value = maskHeaderValue(record[name]);
+      return value ? `${name}=${value}` : undefined;
+    })
+    .filter((entry): entry is string => Boolean(entry))
+    .join(" ");
+}
+
+const keyRequestHeaders = [
+  "payment-required",
+  "payment-signature",
+  "sign-in-with-x",
+];
+
+const keyResponseHeaders = [
+  "payment-required",
+  "payment-response",
+  "sign-in-with-x",
+  "www-authenticate",
+  "access-control-expose-headers",
+];
+
+const tracedFetch: typeof fetch = async (input, init) => {
+  const requestId = ++tracedRequestCounter;
+  const { method, url, headers: reqHeaders } = resolveRequestTraceInfo(input, init);
+  const reqHeadersLowerCase = Object.fromEntries(
+    Object.entries(reqHeaders).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+
+  console.log(`[client:req:${requestId}] --> ${method} ${url}`);
+  console.log(
+    `[client:req:${requestId}] req headers ${formatKeyHeaders(reqHeadersLowerCase, keyRequestHeaders)}`,
+  );
+
+  const response = await rawFetch(input, init);
+  const resHeaders = Object.fromEntries(
+    Array.from(response.headers.entries()).map(([k, v]) => [k.toLowerCase(), v]),
+  );
+  console.log(`[client:req:${requestId}] <-- ${response.status} ${method} ${url}`);
+  console.log(
+    `[client:req:${requestId}] res headers ${formatKeyHeaders(resHeaders, keyResponseHeaders)}`,
+  );
+
+  return response;
+};
+
+const fetchWithPayment = wrapFetchWithPayment(tracedFetch, httpClient);
 
 /**
  * Decodes and logs payment response from headers if present.
@@ -109,31 +192,34 @@ async function demonstrateResource(path: string): Promise<void> {
   console.log(`\n--- ${path} ---`);
 
   // First request: pays for access
-  console.log("1. First request...");
+  // console.log("1. First request...");
   const response1 = await fetchWithPayment(url);
   const body1 = await response1.json();
 
-  logPaymentResponse(response1);
+  const hasPayment = logPaymentResponse(response1);
   if (response1.ok) {
+    if (!hasPayment) {
+      console.log("   ✓ Authenticated via SIWX (previously paid)");
+    }
     console.log("   Response:", body1);
   } else if (body1.error) {
     console.log("   ✗ Payment failed:", body1.details || body1.error);
   }
 
-  // Second request: SIWX hook automatically proves we already paid
-  console.log("2. Second request...");
-  const response2 = await fetchWithPayment(url);
-  const body2 = await response2.json();
+  // // Second request: SIWX hook automatically proves we already paid
+  // console.log("2. Second request...");
+  // const response2 = await fetchWithPayment(url);
+  // const body2 = await response2.json();
 
-  const hasPayment = logPaymentResponse(response2);
-  if (response2.ok) {
-    if (!hasPayment) {
-      console.log("   ✓ Authenticated via SIWX (previously paid)");
-    }
-    console.log("   Response:", body2);
-  } else if (body2.error) {
-    console.log("   ✗ Payment failed:", body2.details || body2.error);
-  }
+  // const hasPayment = logPaymentResponse(response2);
+  // if (response2.ok) {
+  //   if (!hasPayment) {
+  //     console.log("   ✓ Authenticated via SIWX (previously paid)");
+  //   }
+  //   console.log("   Response:", body2);
+  // } else if (body2.error) {
+  //   console.log("   ✗ Payment failed:", body2.details || body2.error);
+  // }
 }
 
 /**
@@ -172,7 +258,7 @@ async function main(): Promise<void> {
   // Auth-only: SIWX signature without payment
   // await demonstrateAuthOnly();
 
-  await demonstrateResource("/weather");
+  // await demonstrateResource("/weather");
 
   // Small delay to avoid facilitator race condition with rapid payments
   await new Promise(resolve => setTimeout(resolve, 300));
