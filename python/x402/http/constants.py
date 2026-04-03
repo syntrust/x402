@@ -12,4 +12,4 @@ ACCESS_CONTROL_EXPOSE_HEADERS = "Access-Control-Expose-Headers"
 HTTP_STATUS_PAYMENT_REQUIRED = 402
 
 # Default Facilitator URL
-DEFAULT_FACILITATOR_URL = "https://x402.org/facilitator"
+DEFAULT_FACILITATOR_URL = "https://www.x402.org/facilitator"

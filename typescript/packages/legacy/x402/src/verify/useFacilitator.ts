@@ -14,7 +14,7 @@ import {
   SettleError,
 } from "../types/verify";
 
-const DEFAULT_FACILITATOR_URL = "https://x402.org/facilitator";
+const DEFAULT_FACILITATOR_URL = "https://www.x402.org/facilitator";
 
 export type CreateHeaders = () => Promise<{
   verify: Record<string, string>;

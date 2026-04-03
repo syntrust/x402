@@ -9,7 +9,7 @@ import {
 } from "../types/facilitator";
 import { z } from "../schemas";
 
-const DEFAULT_FACILITATOR_URL = "https://x402.org/facilitator";
+const DEFAULT_FACILITATOR_URL = "https://www.x402.org/facilitator";
 
 export interface FacilitatorConfig {
   url?: string;
