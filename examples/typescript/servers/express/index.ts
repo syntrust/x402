@@ -49,30 +49,46 @@ function maskHeaderValue(value: string | undefined, visible = 12): string | unde
   return `${value.slice(0, visible)}...${value.slice(-visible)}`;
 }
 
+function isX402HeaderName(name: string): boolean {
+  const normalized = name.toLowerCase();
+  return (
+    normalized.startsWith("payment-") ||
+    normalized.startsWith("x402-") ||
+    normalized === "x402" ||
+    normalized === "x-payment" ||
+    normalized === "sign-in-with-x"
+  );
+}
+
+function formatX402HeadersForLog(
+  headers: Record<string, string | number | string[] | undefined>,
+): string {
+  const serialized = Object.entries(headers)
+    .filter(([name]) => isX402HeaderName(name))
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, value]) => `${name}=${maskHeaderValue(normalizeHeaderForLog(value))}`);
+
+  return serialized.length > 0 ? serialized.join(" ") : "none";
+}
+
 app.use((req, res, next) => {
   const requestId = ++requestCounter;
   const startedAt = Date.now();
-  const paymentRequired = getHeaderValue(req.headers["payment-required"]);
-  const paymentSignature = getHeaderValue(req.headers["payment-signature"]);
-  const signInWithX = getHeaderValue(req.headers["sign-in-with-x"]);
 
+  console.log(`[req:${requestId}] --> ${req.method} ${req.originalUrl}`);
   console.log(
-    `[req:${requestId}] --> ${req.method} ${req.originalUrl} ip=${req.ip} ua="${req.headers["user-agent"] ?? "unknown"}"`,
-  );
-  console.log(
-    `[req:${requestId}] headers payment-required=${maskHeaderValue(paymentRequired)} payment-signature=${maskHeaderValue(paymentSignature)} sign-in-with-x=${maskHeaderValue(signInWithX)}`,
+    `[req:${requestId}] x402 request headers ${formatX402HeadersForLog(req.headers as Record<string, string | number | string[] | undefined>)}`,
   );
 
   res.on("finish", () => {
     const durationMs = Date.now() - startedAt;
-    const paymentResponse = res.getHeader("PAYMENT-RESPONSE");
-    const paymentRequiredResponse = res.getHeader("PAYMENT-REQUIRED");
+    const responseHeaders = res.getHeaders();
 
     console.log(
       `[req:${requestId}] <-- ${res.statusCode} ${req.method} ${req.originalUrl} ${durationMs}ms`,
     );
     console.log(
-      `[req:${requestId}] response payment-required=${maskHeaderValue(normalizeHeaderForLog(paymentRequiredResponse as string | number | string[] | undefined))} payment-response=${maskHeaderValue(normalizeHeaderForLog(paymentResponse as string | number | string[] | undefined))}`,
+      `[req:${requestId}] x402 response headers ${formatX402HeadersForLog(responseHeaders as Record<string, string | number | string[] | undefined>)}`,
     );
   });
 
@@ -132,9 +148,7 @@ app.use(
 );
 
 app.get("/weather", (req, res) => {
-  console.log(
-    `[app] weather handler city=${getHeaderValue(req.headers["x-city"]) ?? "unknown"} path=${req.path}`,
-  );
+  console.log(`[app] weather handler path=${req.path}`);
   res.send({
     report: {
       weather: "sunny",
