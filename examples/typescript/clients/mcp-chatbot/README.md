@@ -113,9 +113,12 @@ cp .env-local .env
 
 2. Add your API keys:
 
-   - `OPENAI_API_KEY`: Get from https://platform.openai.com/api-keys
-   - `EVM_PRIVATE_KEY`: Your wallet private key (needs funds on Base Sepolia)
+   - `OPENAI_API_KEY`: Get from https://platform.openai.com/api-keys (optional in local mode)
+   - `EVM_PRIVATE_KEY`: Your wallet private key (needs funds on Base Sepolia, supports with or without `0x` prefix)
    - `MCP_SERVER_URL`: MCP server URL (default: http://localhost:4022)
+   - `CHAT_MODE`: `openai` | `local` | `auto` (default: `auto`)
+
+   In `CHAT_MODE=local`, the chatbot does not call OpenAI APIs. It routes requests with fixed rules and calls MCP tools directly.
 
 3. Install dependencies:
 
@@ -142,6 +145,17 @@ This starts the MCP server with tools:
 ```bash
 pnpm dev
 ```
+
+### Run Local No-Model Mode
+
+```bash
+CHAT_MODE=local pnpm dev
+```
+
+Local mode supports:
+- Weather intent (e.g. `What's the weather in Tokyo?` → `get_weather`)
+- Ping intent (e.g. `ping` → `ping`)
+- Manual tool call (e.g. `/tool get_weather {"city":"Shanghai"}`)
 
 ## Example Conversation
 

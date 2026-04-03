@@ -27,21 +27,53 @@ config();
 // Configuration
 // ============================================================================
 
-const openaiKey = process.env.OPENAI_API_KEY;
-if (!openaiKey) {
-  console.error("❌ OPENAI_API_KEY environment variable is required");
-  console.error("   Get your API key from: https://platform.openai.com/api-keys");
+type ChatMode = "openai" | "local";
+
+const openaiKey = process.env.OPENAI_API_KEY?.trim();
+const requestedMode = (process.env.CHAT_MODE || "auto").trim().toLowerCase();
+
+const effectiveMode: ChatMode =
+  requestedMode === "local" ? "local" : openaiKey ? "openai" : "local";
+
+if (requestedMode === "openai" && !openaiKey) {
+  console.error("❌ CHAT_MODE=openai but OPENAI_API_KEY is missing");
+  console.error("   Set OPENAI_API_KEY or use CHAT_MODE=local");
   process.exit(1);
 }
 
-const evmPrivateKey = process.env.EVM_PRIVATE_KEY as `0x${string}`;
-if (!evmPrivateKey) {
+function normalizeEvmPrivateKey(rawValue: string): `0x${string}` {
+  // Accept both quoted/unquoted .env values with or without 0x prefix.
+  const normalized = rawValue.trim().replace(/^['"]|['"]$/g, "");
+  const hex = normalized.startsWith("0x") ? normalized.slice(2) : normalized;
+
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error(
+      "EVM_PRIVATE_KEY must be a 32-byte hex string (64 hex chars), with optional 0x prefix",
+    );
+  }
+
+  return `0x${hex}` as `0x${string}`;
+}
+
+const evmPrivateKeyRaw = process.env.EVM_PRIVATE_KEY;
+if (!evmPrivateKeyRaw) {
   console.error("❌ EVM_PRIVATE_KEY environment variable is required");
   console.error("   Generate one with: cast wallet new");
   process.exit(1);
 }
+const evmPrivateKey = normalizeEvmPrivateKey(evmPrivateKeyRaw);
 
 const serverUrl = process.env.MCP_SERVER_URL || "http://localhost:4022";
+
+function parseCityFromWeatherPrompt(input: string): string | undefined {
+  const inOrForMatch = input.match(/weather\s+(?:in|for)\s+([a-zA-Z][a-zA-Z\s.'-]{1,60})/i);
+  if (inOrForMatch?.[1]) return inOrForMatch[1].trim();
+
+  const trailingMatch = input.match(/\bin\s+([a-zA-Z][a-zA-Z\s.'-]{1,60})[?.!]?$/i);
+  if (trailingMatch?.[1]) return trailingMatch[1].trim();
+
+  return undefined;
+}
 
 // ============================================================================
 // Chatbot Implementation
@@ -51,20 +83,15 @@ const serverUrl = process.env.MCP_SERVER_URL || "http://localhost:4022";
  * Main chatbot loop - demonstrates real MCP client usage patterns
  */
 export async function main(): Promise<void> {
-  console.log("\n🤖 OpenAI + MCP Chatbot with x402 Payments");
+  console.log("\n🤖 MCP Chatbot with x402 Payments");
   console.log("━".repeat(70));
 
   // ========================================================================
-  // SETUP 1: Initialize OpenAI (the LLM)
-  // ========================================================================
-  const openai = new OpenAI({ apiKey: openaiKey });
-  console.log("✅ OpenAI client initialized");
-
-  // ========================================================================
-  // SETUP 2: Initialize MCP client (connects to tool servers)
+  // SETUP 1: Initialize MCP client (connects to tool servers)
   // ========================================================================
   const evmSigner = privateKeyToAccount(evmPrivateKey);
   console.log(`💳 Wallet address: ${evmSigner.address}`);
+  console.log(`🧠 Chat mode: ${effectiveMode === "openai" ? "OpenAI + tools" : "Local rules + tools"}`);
 
   const mcpClient = createx402MCPClient({
     name: "openai-mcp-chatbot",
@@ -104,20 +131,68 @@ export async function main(): Promise<void> {
     console.log(`   ${isPaid ? "💰" : "🆓"} ${tool.name}: ${tool.description}`);
   }
 
-  // ========================================================================
-  // HOST LOGIC: Convert MCP tools to OpenAI format
-  // This is not an MCP client method - it's host application logic
-  // ========================================================================
-  const openaiTools: ChatCompletionTool[] = mcpTools.map(tool => ({
-    type: "function" as const,
-    function: {
-      name: tool.name,
-      description: tool.description || "",
-      parameters: tool.inputSchema as Record<string, unknown>,
-    },
-  }));
+  const callToolAndFormatResult = async (
+    toolName: string,
+    toolArgs: Record<string, unknown>,
+  ): Promise<string> => {
+    console.log(`\n   📞 Calling: ${toolName}`);
+    console.log(`   📝 Args: ${JSON.stringify(toolArgs)}`);
 
-  console.log(`✅ Converted to OpenAI tool format`);
+    const mcpResult = await mcpClient.callTool(toolName, toolArgs);
+
+    if (mcpResult.paymentMade && mcpResult.paymentResponse) {
+      console.log(`   💳 Payment settled!`);
+      console.log(`      Transaction: ${mcpResult.paymentResponse.transaction}`);
+      console.log(`      Network: ${mcpResult.paymentResponse.network}`);
+    }
+
+    const firstContent = mcpResult.content[0];
+    const resultText =
+      typeof firstContent?.text === "string"
+        ? firstContent.text
+        : firstContent
+          ? JSON.stringify(firstContent)
+          : "No content returned";
+
+    console.log(
+      `   ✅ Result: ${resultText.substring(0, 200)}${resultText.length > 200 ? "..." : ""}`,
+    );
+    return resultText;
+  };
+
+  let openai: OpenAI | undefined;
+  let openaiTools: ChatCompletionTool[] = [];
+  const conversationHistory: ChatCompletionMessageParam[] = [];
+
+  if (effectiveMode === "openai") {
+    // ======================================================================
+    // SETUP 2: Initialize OpenAI (the LLM)
+    // ======================================================================
+    openai = new OpenAI({ apiKey: openaiKey });
+    console.log("✅ OpenAI client initialized");
+
+    // ======================================================================
+    // HOST LOGIC: Convert MCP tools to OpenAI format
+    // ======================================================================
+    openaiTools = mcpTools.map(tool => ({
+      type: "function" as const,
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.inputSchema as Record<string, unknown>,
+      },
+    }));
+
+    conversationHistory.push({
+      role: "system",
+      content:
+        "You are a helpful assistant with access to MCP tools. When users ask about weather, use the get_weather tool. Be concise and friendly.",
+    });
+    console.log("✅ Converted to OpenAI tool format");
+  } else {
+    console.log("✅ Local mode ready (no OpenAI API calls)");
+    console.log("   Tips: ask weather/ping, or use: /tool <name> <json-args>");
+  }
   console.log("━".repeat(70));
 
   // ========================================================================
@@ -127,13 +202,6 @@ export async function main(): Promise<void> {
   console.log("   - 'What's the weather in Tokyo?'");
   console.log("   - 'Can you ping the server?'");
   console.log("   - 'quit' to exit\n");
-
-  const conversationHistory: ChatCompletionMessageParam[] = [
-    {
-      role: "system",
-      content: `You are a helpful assistant with access to MCP tools. When users ask about weather, use the get_weather tool. Be concise and friendly.`,
-    },
-  ];
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -146,6 +214,103 @@ export async function main(): Promise<void> {
    * @param userInput - The user's message to process
    */
   const processTurn = async (userInput: string): Promise<void> => {
+    if (effectiveMode === "local") {
+      const normalizedInput = userInput.trim();
+
+      if (normalizedInput.toLowerCase() === "help") {
+        console.log("\n🤖 Bot: I can handle weather and ping with local rules.");
+        console.log("   Examples:");
+        console.log("   - What's the weather in Tokyo?");
+        console.log("   - ping");
+        console.log("   - /tool get_weather {\"city\":\"Shanghai\"}\n");
+        return;
+      }
+
+      if (normalizedInput.toLowerCase().startsWith("/tool ")) {
+        const parts = normalizedInput.split(/\s+/, 3);
+        const toolName = parts[1];
+        const rawArgs = parts[2];
+
+        if (!toolName) {
+          console.log("\n❌ Error: Usage: /tool <toolName> <json-args>\n");
+          return;
+        }
+
+        let args: Record<string, unknown> = {};
+        if (rawArgs) {
+          try {
+            const parsed = JSON.parse(rawArgs);
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              args = parsed as Record<string, unknown>;
+            } else {
+              console.log("\n❌ Error: tool args must be a JSON object\n");
+              return;
+            }
+          } catch {
+            console.log("\n❌ Error: invalid JSON args for /tool command\n");
+            return;
+          }
+        }
+
+        try {
+          const resultText = await callToolAndFormatResult(toolName, args);
+          console.log(`\n🤖 Bot: ${resultText}\n`);
+        } catch (error) {
+          console.log(`\n❌ Error: ${error instanceof Error ? error.message : error}\n`);
+        }
+        return;
+      }
+
+      const lower = normalizedInput.toLowerCase();
+      const hasWeatherIntent = lower.includes("weather");
+      const hasPingIntent = lower === "ping" || lower.includes(" ping") || lower.includes("server");
+
+      if (hasWeatherIntent) {
+        const weatherTool = mcpTools.find(tool => tool.name === "get_weather");
+        if (!weatherTool) {
+          console.log("\n🤖 Bot: MCP server doesn't expose get_weather.\n");
+          return;
+        }
+
+        const city = parseCityFromWeatherPrompt(normalizedInput);
+        if (!city) {
+          console.log("\n🤖 Bot: Please include a city, for example: What's the weather in Tokyo?\n");
+          return;
+        }
+
+        try {
+          const resultText = await callToolAndFormatResult("get_weather", { city });
+          console.log(`\n🤖 Bot: ${resultText}\n`);
+        } catch (error) {
+          console.log(`\n❌ Error: ${error instanceof Error ? error.message : error}\n`);
+        }
+        return;
+      }
+
+      if (hasPingIntent) {
+        const pingTool = mcpTools.find(tool => tool.name === "ping");
+        if (!pingTool) {
+          console.log("\n🤖 Bot: MCP server doesn't expose ping.\n");
+          return;
+        }
+
+        try {
+          const resultText = await callToolAndFormatResult("ping", {});
+          console.log(`\n🤖 Bot: ${resultText}\n`);
+        } catch (error) {
+          console.log(`\n❌ Error: ${error instanceof Error ? error.message : error}\n`);
+        }
+        return;
+      }
+
+      console.log("\n🤖 Bot: In local mode I route by rules. Type `help` to see supported commands.\n");
+      return;
+    }
+
+    if (!openai) {
+      throw new Error("OpenAI client not initialized");
+    }
+
     // Add user message to history
     conversationHistory.push({
       role: "user",
@@ -156,7 +321,7 @@ export async function main(): Promise<void> {
     // OPENAI CALL: Send conversation + tools to LLM
     // ========================================================================
     let response = await openai.chat.completions.create({
-      model: "gpt-4o",
+      model: "gpt-4o-mini",
       messages: conversationHistory,
       tools: openaiTools,
       tool_choice: "auto", // Let LLM decide when to use tools
@@ -185,32 +350,15 @@ export async function main(): Promise<void> {
         const toolName = toolCall.function.name;
         const toolArgs = JSON.parse(toolCall.function.arguments);
 
-        console.log(`\n   📞 Calling: ${toolName}`);
-        console.log(`   📝 Args: ${JSON.stringify(toolArgs)}`);
-
         try {
           // ====================================================================
           // MCP TOUCHPOINT #3: callTool()
           // THIS IS THE MAIN TOUCHPOINT - Execute tool via MCP
           // Payment is handled automatically by x402MCPClient
           // ====================================================================
-          const mcpResult = await mcpClient.callTool(toolName, toolArgs);
-
-          // Show payment info if payment was made
-          if (mcpResult.paymentMade && mcpResult.paymentResponse) {
-            console.log(`   💳 Payment settled!`);
-            console.log(`      Transaction: ${mcpResult.paymentResponse.transaction}`);
-            console.log(`      Network: ${mcpResult.paymentResponse.network}`);
-          }
-
-          // Extract text content from MCP result
-          const resultText =
-            mcpResult.content[0]?.text ||
-            JSON.stringify(mcpResult.content[0]) ||
-            "No content returned";
-
-          console.log(
-            `   ✅ Result: ${resultText.substring(0, 200)}${resultText.length > 200 ? "..." : ""}`,
+          const resultText = await callToolAndFormatResult(
+            toolName,
+            toolArgs as Record<string, unknown>,
           );
 
           // Format for OpenAI
@@ -238,7 +386,7 @@ export async function main(): Promise<void> {
       // Get LLM's response after seeing tool results
       // ========================================================================
       response = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         messages: conversationHistory,
         tools: openaiTools,
         tool_choice: "auto",
