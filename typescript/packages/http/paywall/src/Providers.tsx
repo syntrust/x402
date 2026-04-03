@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { WagmiProvider, createConfig, http } from "wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { injected, coinbaseWallet } from "wagmi/connectors";
+import { injected } from "wagmi/connectors";
 import * as allChains from "viem/chains";
 import type { Chain } from "viem";
 import { isEvmNetwork } from "./paywallUtils";
@@ -43,12 +43,7 @@ export function Providers({ children }: ProvidersProps) {
   // Create Wagmi config
   const config = createConfig({
     chains: [targetChain],
-    connectors: [
-      injected(),
-      coinbaseWallet({
-        appName: window.x402.appName || "x402 Paywall",
-      }),
-    ],
+    connectors: [injected({ target: "metaMask" })],
     transports: {
       [targetChain.id]: http(),
     },
